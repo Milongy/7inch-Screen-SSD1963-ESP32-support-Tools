@@ -1,0 +1,181 @@
+// Code for callibarting and SSD1963 with an ESP32
+// Author: Michael.Clarkson
+// GIT:Repo https://github.com/Milongy/7inch-Screen-SSD1963-ESP32-support-Tools
+// Version: 0.1
+// Contributors: Non yet
+// This code will give you the code you need to calibrate the touch screen for your projects.
+
+#include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
+
+// Screen and Touchscreen Pins
+#define XPT2046_IRQ 35
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 34
+#define XPT2046_CLK 27
+#define XPT2046_CS 5
+#define BL 21
+
+// Screen dimensions for a 7-inch display
+#define SCREEN_WIDTH 800
+#define SCREEN_HEIGHT 480
+
+// Initialize display and touchscreen instances
+TFT_eSPI tft = TFT_eSPI();
+SPIClass touchscreenSPI(VSPI);
+XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
+
+// Calibration points and screen coordinates
+int screenCalPoints[5][2] = {
+  {10, 10},                         // Top-left
+  {SCREEN_WIDTH - 10, 10},          // Top-right
+  {SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10},  // Bottom-right
+  {10, SCREEN_HEIGHT - 10},         // Bottom-left
+  {SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2}  // Center
+};
+
+// Adjusted raw touch points (provided)
+int rawCalPoints[5][2] = {
+  {2260, 1370},  // Top-left (adjusted)
+  {100, 3400},  // Top-right (adjusted)
+  {2600, 2400},  // Bottom-right (adjusted)
+  {3650, 0},  // Bottom-left (adjusted)
+  {1773, 1850}   // Center (adjusted)
+};
+
+int16_t rawXMin = 4095, rawXMax = 0, rawYMin = 4095, rawYMax = 0;
+int currentPoint = 0;
+bool pressed[5] = {false, false, false, false, false};
+unsigned long touchStartTime = 0;
+bool isTouching = false;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize TFT display
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(TFT_BLACK);
+
+  // Initialize touchscreen SPI
+  touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  touchscreen.begin(touchscreenSPI);
+  touchscreen.setRotation(1);
+
+  // Turn on backlight
+  pinMode(BL, OUTPUT);
+  digitalWrite(BL, HIGH);
+
+  // Display instructions
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(20, SCREEN_HEIGHT / 2 - 30);
+  tft.print("Hold each cross for 2 seconds to calibrate");
+
+  delay(2000);
+  drawBoxes();
+}
+
+void loop() {
+  // Check for touch input
+  if (touchscreen.tirqTouched() && touchscreen.touched()) {
+    TS_Point p = touchscreen.getPoint();
+
+    Serial.print("Raw touch coordinates: ");
+    Serial.print(p.x);
+    Serial.print(", ");
+    Serial.println(p.y);
+
+    // Check if touch is near the current calibration point
+    int tolerance = 300;  // Increase the tolerance value
+    if (abs(p.x - rawCalPoints[currentPoint][0]) < tolerance && abs(p.y - rawCalPoints[currentPoint][1]) < tolerance) {
+      if (!isTouching) {
+        isTouching = true;
+        touchStartTime = millis();
+      } else if (millis() - touchStartTime >= 2000) {
+        Serial.println("Touch near calibration point detected!");
+
+        // Update min and max raw values
+        rawXMin = min(rawXMin, p.x);
+        rawXMax = max(rawXMax, p.x);
+        rawYMin = min(rawYMin, p.y);
+        rawYMax = max(rawYMax, p.y);
+
+        // Mark the current point as pressed
+        pressed[currentPoint] = true;
+        drawBox(screenCalPoints[currentPoint][0], screenCalPoints[currentPoint][1], currentPoint + 1, TFT_GREEN);
+
+        // Move to the next calibration point
+        currentPoint++;
+        if (currentPoint >= 5) {
+          // Calibration complete
+          tft.fillScreen(TFT_BLACK);
+          tft.setCursor(20, SCREEN_HEIGHT / 2 - 20);
+          tft.print("Calibration Complete!");
+          printCalibrationResults();
+          while (true); // Stop loop after calibration
+        }
+        isTouching = false;
+      }
+    } else {
+      isTouching = false;
+    }
+  } else {
+    isTouching = false;
+  }
+}
+
+// Function to draw boxes with numbers
+void drawBoxes() {
+  for (int i = 0; i < 5; i++) {
+    drawBox(screenCalPoints[i][0], screenCalPoints[i][1], i + 1, TFT_RED);
+  }
+}
+
+// Function to draw a box at a specific position
+void drawBox(int x, int y, int number, uint32_t color) {
+  tft.fillRect(x - 15, y - 15, 30, 30, color); // Draw box
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(x - 5, y - 10);
+  tft.print(number); // Draw number
+}
+
+// Function to print calibration results as map code
+void printCalibrationResults() {
+  // Print to Serial Monitor
+  Serial.println();
+  Serial.println("Calibration results - copy and paste from the serial port into your code:");
+  Serial.print("int x = map(p.x, ");
+  Serial.print(rawXMin);
+  Serial.print(", ");
+  Serial.print(rawXMax);
+  Serial.print(", 0, SCREEN_WIDTH);");
+  Serial.println();
+
+  Serial.print("int y = map(p.y, ");
+  Serial.print(rawYMin);
+  Serial.print(", ");
+  Serial.print(rawYMax);
+  Serial.print(", 0, SCREEN_HEIGHT);");
+  Serial.println();
+
+  // Print to the screen
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(20, 100);
+  tft.println("Calibration results:");
+  tft.setCursor(20, 150);
+  tft.print("int x = map(p.x, ");
+  tft.print(rawXMin);
+  tft.print(", ");
+  tft.print(rawXMax);
+  tft.print(", 0, SCREEN_WIDTH);");
+  tft.setCursor(20, 200);
+  tft.print("int y = map(p.y, ");
+  tft.print(rawYMin);
+  tft.print(", ");
+  tft.print(rawYMax);
+  tft.print(", 0, SCREEN_HEIGHT);");
+}
